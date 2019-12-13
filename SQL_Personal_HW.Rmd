@@ -1,0 +1,115 @@
+---
+title: "SQL_REPORT"
+author: "hakmin"
+date: '2019 12 10 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# SQL 데이터를 R로 만져보자!
+
+본 보고서는 SQL 데이터를 R에 연동시켜보고 시각화까지 하는 실습의 과정을 다루어보고자 한다. SQL과 토이데이터를 다운받는 과정은 연세대학교 데이터 공학 [이광춘](hhttps://statkclee.github.io/data-science/ds-postgreSQL.html) 교수님께서 상세하게 다루고 있으니 링크를 참조하고 본 보고서에서는 생략한다.
+
+# R로 연동하기
+
+먼저 아래의 코드를 통해 다운받은 DVD 대여 데이터베이스를 R에 연동시킨다.
+
+```{r warning=FALSE, message=FALSE}
+library(RPostgreSQL)
+library(DBI)
+
+pgdrv <- dbDriver("PostgreSQL")
+
+con <- dbConnect(pgdrv, dbname="dvd", 
+                 port="5432", 
+                 user="postgres", 
+                 password='dhy01147!', 
+                 host="localhost")
+
+actor <- dbGetQuery(con, "SELECT * FROM actor LIMIT 5")
+
+```
+
+그리고 가져온 데이터 프레임을 dplyr로 후속작업을 진행한다.
+
+```{r warning=FALSE, message=FALSE}
+library(tidyverse)
+actor %>% 
+  filter(actor_id ==1)
+
+```
+
+아래 코드를 통해 적합한 테이블을 찾는다.
+
+```{r warning=FALSE, message=FALSE}
+qry <- "SELECT *
+        FROM pg_catalog.pg_tables"
+
+dbGetQuery(con, qry) %>% 
+  filter(schemaname == 'public') 
+```
+
+# 원하는 데이터 불러오기
+
+먼저 테이블별 칼럼명을 불러온다. 대략적인 내용을 보면서 영감을 얻을 수 있다.
+
+```{r warning=FALSE, message=FALSE}
+col_qry <- "SELECT table_name,
+                   STRING_AGG(column_name, ', ') AS columns
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+            GROUP BY table_name;"
+
+dbGetQuery(con, col_qry)%>%
+  DT::datatable()
+```
+
+# 데이터 분석 및 시각화
+
+테이블 별 칼럼명을 보고 작성자는 2가지 지점에 대해 질문해보았다. 첫 번째는 어떤 시간대에 사람들이 DVD를 가장 많이 대여하는가? 두 번째는 어떤 손님이 VIP인가? 두 가지 지점에 대해 모두 알아볼 수 있는 테이블은 Payment이므로 먼저 payment 테이블을 불러왔다. 
+
+```{r warning=FALSE, message=FALSE}
+payment_df <- dbGetQuery(con, "SELECT * FROM payment")
+payment_df %>%
+DT::datatable()
+
+```
+
+## 어떤 시간에 많이 대여하는가?
+
+payment_data 칼럼을 불러와 시간대만 따로 떼어 새로운 칼럼을 만들었고 시간대별로 평균 대여량 (amount)과 대여횟수를 그룹화해서 Barplot으로 시각화 했다. 그 결과 13시의 대여 횟수가 다른 시간대에 비에 현격히 높은 것을 확인할 수 있었고  13시만 따로 PEAK TIME으로 지정해 색생을 추가했다.
+
+```{r warning=FALSE, message=FALSE}
+library(plotly)
+library(lubridate)
+g=payment_df %>%
+  mutate(hour = payment_date %>% hour) %>%
+  group_by(hour) %>%
+  summarise(rent_cnt = n(),
+            mean_amt = mean(amount)) %>%
+  mutate(PEAK = ifelse((rent_cnt>700), 'PEAK', 'Normal'))%>%
+  ggplot(aes(x=hour, y=rent_cnt, fill=PEAK)) +
+  geom_bar(stat='identity')
+
+ggplotly(g)
+```
+
+# VIP는 누구인가?
+두 번째로 어떤 손님이 실제로 우수고객(VIP)인가를 알아보기 위해 X축을 대여 금액의 총합으로 Y축을 대여 횟수로 두고 산점도 그래프를 그렸다. 그 결과 우측 상단에 VIP 그룹이 있음을 알 수 있었으며 툴팁을 추가해 마우스를 올리면 customer_id를 알 수 있도록 구현하였다.
+
+```{r warning=FALSE, message=FALSE}
+p=payment_df %>%
+  group_by(customer_id) %>%
+  summarise(sum_amt = sum(amount),
+            rent_cnt = n()) %>%
+  mutate(VIP = ifelse((sum_amt>180 & rent_cnt>35), 'VIP', 'Normal'))%>%
+
+  ggplot(aes(x=sum_amt, y=rent_cnt, color=VIP, text = paste0("고객ID :", customer_id ))) +
+  geom_point()
+
+ggplotly(p, toolpit='text')
+
+```
